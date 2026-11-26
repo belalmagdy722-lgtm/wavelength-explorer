@@ -233,6 +233,47 @@ function drawWavePath(pathElement, cycles, width, height, phase = 0) {
   pathElement.setAttribute('d', d);
 }
 
+// ---- Motion: travelling waves and state-change transitions ----
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const liveWaves = {};
+let waveFrame = 0;
+let lastFrame = 0;
+function setLiveWave(key, path, cycles, width, height) {
+  const wave = liveWaves[key] || (liveWaves[key] = { path, cycles, phase: 0, visible: true });
+  Object.assign(wave, { path, target: cycles, width, height });
+  if (reducedMotion.matches) { wave.cycles = cycles; drawWavePath(path, cycles, width, height, wave.phase); return; }
+  if (!wave.observed && 'IntersectionObserver' in window) {
+    wave.observed = true;
+    new IntersectionObserver(entries => entries.forEach(entry => { wave.visible = entry.isIntersecting; })).observe(path.closest('svg'));
+  }
+  if (!waveFrame) { lastFrame = performance.now(); waveFrame = requestAnimationFrame(animateWaves); }
+}
+function animateWaves(now) {
+  const dt = Math.min(.05, (now - lastFrame) / 1000);
+  lastFrame = now;
+  Object.values(liveWaves).forEach(wave => {
+    if (!wave.visible) return;
+    wave.cycles += (wave.target - wave.cycles) * Math.min(1, dt * 7);
+    // Phase rate scales with cycles, so every wave crosses the screen at the same speed, like light.
+    wave.phase -= wave.cycles * .9 * dt;
+    drawWavePath(wave.path, wave.cycles, wave.width, wave.height, wave.phase);
+  });
+  waveFrame = reducedMotion.matches ? 0 : requestAnimationFrame(animateWaves);
+}
+if (reducedMotion.addEventListener) reducedMotion.addEventListener('change', () => {
+  Object.values(liveWaves).forEach(wave => { wave.cycles = wave.target; drawWavePath(wave.path, wave.cycles, wave.width, wave.height, wave.phase); });
+  if (!reducedMotion.matches && !waveFrame) { lastFrame = performance.now(); waveFrame = requestAnimationFrame(animateWaves); }
+});
+function replay(elements, className = 'is-swapping') {
+  if (reducedMotion.matches) return;
+  elements.forEach(el => {
+    if (!el) return;
+    el.classList.remove(className);
+    void el.offsetWidth;
+    el.classList.add(className);
+  });
+}
+
 function initSpectrum() {
   const nodes = $('#spectrumNodes');
   const selector = $('#spectrumSelector');
@@ -253,7 +294,8 @@ function selectSpectrum(index) {
   $('#regionWavelength').textContent = wave.wavelength;
   $('#regionFrequency').textContent = wave.frequency;
   $('#regionEnergy').textContent = wave.energy;
-  drawWavePath($('#spectrumWavePath'), 2.2 + selectedWave * 3.7, 1000, 180, selectedWave * .35);
+  setLiveWave('spectrum', $('#spectrumWavePath'), 2.2 + selectedWave * 3.7, 1000, 180);
+  replay([$('.spectrum-control-copy'), $('.detail-main'), ...$$('.detail-stat strong')]);
 }
 
 function makeIllustration(index) {
@@ -298,17 +340,20 @@ function selectWave(index) {
   $('#visualWaveSymbol').textContent = wave.symbol;
   $('#visualWaveClass').textContent = wave.className;
   $('#waveIllustration').innerHTML = makeIllustration(selectedWave);
+  $$('#waveIllustration .illustration-stroke').forEach(shape => shape.setAttribute('pathLength', '1'));
+  replay([$('.wave-title-row'), $('#waveLead'), $('.wave-meta-grid'), $('#waveIllustration'), $('.visual-caption')]);
   $$('.wave-tab').forEach(button => button.classList.toggle('active', button.dataset.tab === activeTab));
   renderWaveTab();
   selectSpectrum(selectedWave);
 }
 function renderWaveTab() {
   const wave = waves[selectedWave];
+  replay([$('#waveTabContent')]);
   $$('.wave-tab').forEach(button => button.classList.toggle('active', button.dataset.tab === activeTab));
   const list = wave[activeTab];
   const content = $('#waveTabContent');
   if (activeTab === 'uses') {
-    content.innerHTML = `<div class="info-grid">${list.map(([title, desc, icon]) => `<div class="info-tile"><span class="info-icon">${icon}</span><div><strong>${title}</strong><p>${desc}</p></div></div>`).join('')}</div>`;
+    content.innerHTML = `<div class="info-grid">${list.map(([title, desc]) => `<div class="info-tile info-tile-plain"><div><strong>${title}</strong><p>${desc}</p></div></div>`).join('')}</div>`;
   } else {
     content.innerHTML = `<div class="info-grid">${list.map(([title, desc], index) => `<div class="info-tile"><span class="info-icon">${activeTab === 'benefits' ? '＋' : '!'}</span><div><strong>${title}</strong><p>${desc}</p></div></div>`).join('')}</div><p class="fine-print">${wave.note}</p>`;
   }
@@ -340,13 +385,14 @@ function updateLab() {
   $('#calcInsight').textContent = `At ${formatScientific(frequency, 1)} Hz, the wavelength is ${prettyWavelength(wavelength)}. Move right to increase photon energy and shorten the wavelength.`;
   $('#frequencySlider').style.background = `linear-gradient(90deg, ${wave.color}, #b68cff)`;
   const cycles = Math.max(1.2, Math.min(24, (exponent - 2) * 1.35));
-  drawWavePath($('#labWavePath'), cycles, 600, 130, exponent * .2);
+  setLiveWave('lab', $('#labWavePath'), cycles, 600, 130);
 }
 
 function initMissions() {
   $$('.mission-card').forEach(button => button.addEventListener('click', () => {
     selectWave(Number(button.dataset.wave));
-    $('#daily-life').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('#daily-life').scrollIntoView({ behavior: reducedMotion.matches ? 'auto' : 'smooth', block: 'start' });
+    setTimeout(() => replay([$('.wave-list-item.active')], 'is-arriving'), 450);
   }));
 }
 
@@ -374,6 +420,7 @@ function setIonMode(mode) {
   $('#ionDescription').textContent = data.description;
   $('#ionBands').innerHTML = data.bands.map(band => `<span>${band}</span>`).join('');
   $('#ionNote').textContent = data.note;
+  replay([$('#ionKicker'), $('#ionTitle'), $('#ionDescription'), $('#ionBands'), $('#ionNote'), $('#ionVisualTag')]);
   $('.ion-nucleus').style.background = data.color;
   $('.ion-nucleus').style.boxShadow = `0 0 0 9px color-mix(in srgb, ${data.color} 12%, transparent), 0 0 35px ${data.color}`;
   $('.ion-orbit').style.borderColor = `color-mix(in srgb, ${data.color} 55%, transparent)`;
@@ -395,6 +442,7 @@ function renderQuiz() {
   $('#quizNext').innerHTML = quizIndex === qs.length - 1 ? 'See your result <span>→</span>' : 'Next question <span>→</span>';
   $('#quizOptions').innerHTML = item.options.map((option, index) => `<button type="button" class="quiz-option" data-option="${index}"><span class="option-letter">${String.fromCharCode(65 + index)}</span><span>${option}</span></button>`).join('');
   $$('.quiz-option').forEach(button => button.addEventListener('click', () => answerQuiz(Number(button.dataset.option))));
+  replay([$('.quiz-question-area')]);
 }
 function answerQuiz(choice) {
   if (quizAnswered) return;
@@ -410,6 +458,7 @@ function answerQuiz(choice) {
   $('#quizScoreLabel').textContent = `SCORE ${quizScore}`;
   $('#quizFeedback').textContent = `${correct ? '✓ Correct. ' : 'Not quite. '} ${item.why}`;
   $('#quizFeedback').className = `quiz-feedback ${correct ? 'good' : 'bad'}`;
+  replay([$('#quizFeedback')]);
   $('#quizHint').textContent = correct ? 'NICE ONE · KEEP GOING' : 'GOOD TRY · LEARNING IS THE POINT';
   $('#quizNext').disabled = false;
   $('#quizProgressFill').style.width = `${((quizIndex + 1) / qs.length) * 100}%`;
@@ -417,6 +466,7 @@ function answerQuiz(choice) {
 function finishQuiz() {
   $('#quizCard').hidden = true;
   $('#quizResult').hidden = false;
+  replay([$('#quizResult')]);
   const percent = quizScore / qs.length;
   $('#quizFinalTitle').textContent = percent === 1 ? 'Perfect signal.' : percent >= .6 ? 'You’re tuned in.' : 'Curiosity is a great start.';
   $('#quizFinalText').textContent = `You got ${quizScore} out of ${qs.length} correct. ${percent >= .8 ? 'You have a strong grasp of the spectrum.' : 'Explore the wave cards again and give it another go.'}`;
@@ -449,11 +499,8 @@ function initNavigation() {
   $('#menuToggle').addEventListener('click', () => menu.classList.toggle('open'));
   $$('.topnav a').forEach(link => link.addEventListener('click', () => menu.classList.remove('open')));
   $('#backToTop').addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
-  const progress = $('#scrollProgress');
   const back = $('#backToTop');
   const update = () => {
-    const max = document.documentElement.scrollHeight - window.innerHeight;
-    progress.style.width = `${max > 0 ? (window.scrollY / max) * 100 : 0}%`;
     back.classList.toggle('visible', window.scrollY > 700);
   };
   window.addEventListener('scroll', update, { passive: true });
@@ -469,14 +516,6 @@ function initNavigation() {
     sections.forEach(section => observer.observe(section));
   }
 }
-function initReveal() {
-  const elements = $$('.reveal');
-  if (!('IntersectionObserver' in window)) { elements.forEach(el => el.classList.add('is-visible')); return; }
-  const observer = new IntersectionObserver(entries => entries.forEach(entry => {
-    if (entry.isIntersecting) { entry.target.classList.add('is-visible'); observer.unobserve(entry.target); }
-  }), { threshold: .12, rootMargin: '0px 0px -35px 0px' });
-  elements.forEach(el => observer.observe(el));
-}
 
 initSpectrum();
 initWaveExplorer();
@@ -485,6 +524,5 @@ initIonization();
 initQuiz();
 initTheme();
 initNavigation();
-initReveal();
 $('#frequencySlider').addEventListener('input', updateLab);
 updateLab();
